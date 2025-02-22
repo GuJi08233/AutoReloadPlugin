@@ -5,12 +5,7 @@ import asyncio
 import re
 from typing import List, Union
 
-@register(
-    name="AutoReloader",  # 必须的插件名称
-    description="定时热重载消息平台",  # 必须的描述
-    version="1.0",  # 必须的版本号
-    author="Donzin"  # 必须的作者信息
-)
+@register(name="sdad", description="说的都是", version="0.1", author="小多少点")
 class AutoReloaderPlugin(BasePlugin):
     def __init__(self, host: APIHost):
         super().__init__(host)  # 必须调用父类初始化
