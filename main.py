@@ -2,14 +2,9 @@ from pkg.plugin.context import register, handler, llm_func, BasePlugin, APIHost,
 from pkg.plugin.events import *  # 导入事件类
 
 
-"""
-在收到私聊或群聊消息"hello"时，回复"hello, <发送者id>!"或"hello, everyone!"
-"""
-
-
 # 注册插件
 @register(name="Hello", description="hello world", version="0.1", author="RockChinQ")
-class HelloPlugin(BasePlugin):
+class MyPlugin(BasePlugin):
 
     # 插件加载时触发
     def __init__(self, host: APIHost):
