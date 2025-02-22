@@ -5,7 +5,7 @@ from pkg.core.bootutils import lifecycle
 from typing import Union
 
 # 注册插件
-@register(name="AutoReloader", description="定时热重载消息平台", version="1.0", author="Donzin")
+@register(name="定时热重载", description="定时执行热重载", version="0.1", author="孤寂")
 class AutoReloaderPlugin(BasePlugin):
 
     def __init__(self, host: APIHost):
