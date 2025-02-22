@@ -1,136 +1,121 @@
-import asyncio
-from pkg.plugin.context import register, handler, llm_func, BasePlugin, APIHost, EventContext
-from pkg.plugin.events import *
+from pkg.plugin.context import register, handler, BasePlugin, APIHost, EventContext
+from pkg.plugin.events import PersonNormalMessageReceived, GroupNormalMessageReceived
 from pkg.core.bootutils import lifecycle
-from typing import Union
+import asyncio
+import re
+from typing import List, Union
 
-# 注册插件
-@register(name="定时热重载", description="定时执行热重载", version="0.1", author="孤寂")
+@register(
+    name="AutoReloader",  # 必须的插件名称
+    description="定时热重载消息平台",  # 必须的描述
+    version="1.0",  # 必须的版本号
+    author="Donzin"  # 必须的作者信息
+)
 class AutoReloaderPlugin(BasePlugin):
-
     def __init__(self, host: APIHost):
-        # 默认配置
-        self.reload_interval = 1200  # 默认20分钟（1200秒）
+        super().__init__(host)  # 必须调用父类初始化
+        # 配置项
+        self.default_interval = 1200  # 默认20分钟
+        self.min_interval = 300  # 最小5分钟
         self.reload_scopes = [
-            lifecycle.LifecycleControlScope.PLATFORM.value,  # 默认只重载平台
-            # lifecycle.LifecycleControlScope.PLUGIN.value,
+            lifecycle.LifecycleControlScope.PLATFORM.value,
+            lifecycle.LifecycleControlScope.PLUGIN.value
         ]
-        self.is_auto_reload = True  # 默认开启自动重载
+        self.admin_users = ["your_admin_id_here"]  # 必须配置管理员ID
         self.task = None
-        self.admin_users = ["admin_user_id"]  # 允许操作的管理员用户ID列表
 
     async def initialize(self):
-        """初始化时启动定时任务"""
-        if self.is_auto_reload:
+        """异步初始化"""
+        self.ap.logger.info("AutoReloader 插件已加载")
+        if self.default_interval >= self.min_interval:
             self.task = asyncio.create_task(self.schedule_reload())
 
     async def unload(self):
-        """插件卸载时停止任务"""
+        """插件卸载处理"""
         if self.task:
             self.task.cancel()
             try:
                 await self.task
             except asyncio.CancelledError:
                 pass
+        self.ap.logger.info("AutoReloader 插件已卸载")
 
     async def schedule_reload(self):
-        """定时重载任务"""
+        """定时任务循环"""
         while True:
             try:
-                await asyncio.sleep(self.reload_interval)
-                await self.do_reload()
+                await asyncio.sleep(self.default_interval)
+                await self.execute_reload()
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.ap.logger.error(f"定时重载失败: {str(e)}")
+                self.ap.logger.error(f"定时任务异常: {str(e)}")
 
-    async def do_reload(self, scope: Union[str, list] = None):
+    async def execute_reload(self, scopes: List[str] = None):
         """执行重载操作"""
         try:
-            scopes = scope or self.reload_scopes
-            for s in scopes:
-                self.ap.logger.info(f"开始热重载: scope={s}")
-                await lifecycle.reload(s)
-                self.ap.logger.info(f"热重载完成: scope={s}")
+            targets = scopes or self.reload_scopes
+            for scope in targets:
+                self.ap.logger.info(f"开始重载: {scope}")
+                await lifecycle.reload(scope)
+                self.ap.logger.info(f"重载完成: {scope}")
             return True
         except Exception as e:
-            self.ap.logger.error(f"热重载失败: {str(e)}")
+            self.ap.logger.error(f"重载失败: {str(e)}")
             return False
 
     @handler(PersonNormalMessageReceived)
-    async def handle_person_message(self, ctx: EventContext):
-        await self.process_command(ctx, is_group=False)
-
     @handler(GroupNormalMessageReceived)
-    async def handle_group_message(self, ctx: EventContext):
-        await self.process_command(ctx, is_group=True)
-
-    async def process_command(self, ctx: EventContext, is_group: bool):
-        """处理控制命令"""
-        msg = ctx.event.text_message.strip()
-        sender = ctx.event.sender_id
-
-        # 权限检查
-        if sender not in self.admin_users:
+    async def handle_message(self, ctx: EventContext):
+        """统一消息处理"""
+        # 权限验证
+        if ctx.event.sender_id not in self.admin_users:
             return
 
-        # 解析命令
+        # 命令解析
+        msg = re.sub(r'@\S+\s*', '', ctx.event.text_message).strip()
+        
         if msg.startswith("/reload"):
-            parts = msg.split()
-            if len(parts) == 1:
-                # 立即执行重载
-                success = await self.do_reload()
-                reply = "✅ 热重载完成" if success else "❌ 热重载失败"
-            elif len(parts) >= 2:
-                # 带参数的重载
-                scope_map = {
-                    "platform": [lifecycle.LifecycleControlScope.PLATFORM.value],
-                    "plugin": [lifecycle.LifecycleControlScope.PLUGIN.value],
-                    "all": [
-                        lifecycle.LifecycleControlScope.PLATFORM.value,
-                        lifecycle.LifecycleControlScope.PLUGIN.value
-                    ]
-                }
-                scope = scope_map.get(parts[1].lower())
-                if scope:
-                    success = await self.do_reload(scope)
-                    reply = f"✅ {parts[1]}重载完成" if success else f"❌ {parts[1]}重载失败"
-                else:
-                    reply = "❌ 无效的重载范围，可用值：platform/plugin/all"
-            ctx.add_return("reply", [reply])
-            ctx.prevent_default()
-
+            await self.handle_reload_command(ctx, msg)
         elif msg.startswith("/reload_interval"):
-            parts = msg.split()
-            if len(parts) == 2 and parts[1].isdigit():
-                new_interval = int(parts[1])
-                if new_interval >= 60:  # 最小60秒
-                    self.reload_interval = new_interval
-                    reply = f"✅ 重载间隔已设置为 {new_interval} 秒"
-                else:
-                    reply = "❌ 间隔时间不能小于60秒"
-            else:
-                reply = "❌ 用法：/reload_interval <秒数>"
-            ctx.add_return("reply", [reply])
-            ctx.prevent_default()
+            await self.handle_interval_command(ctx, msg)
 
-        elif msg == "/auto_reload on":
-            if not self.is_auto_reload:
-                self.is_auto_reload = True
-                self.task = asyncio.create_task(self.schedule_reload())
-                reply = "✅ 已开启自动重载"
-            ctx.add_return("reply", [reply])
-            ctx.prevent_default()
+    async def handle_reload_command(self, ctx: EventContext, command: str):
+        """处理重载命令"""
+        parts = command.split()
+        scope_map = {
+            "platform": [lifecycle.LifecycleControlScope.PLATFORM.value],
+            "plugins": [lifecycle.LifecycleControlScope.PLUGIN.value],
+            "all": self.reload_scopes
+        }
+        
+        target = parts[1].lower() if len(parts) > 1 else "all"
+        scopes = scope_map.get(target, self.reload_scopes)
+        
+        success = await self.execute_reload(scopes)
+        reply = f"✅ {target}重载成功" if success else f"❌ {target}重载失败"
+        ctx.add_return("reply", [reply])
+        ctx.prevent_default()
 
-        elif msg == "/auto_reload off":
-            if self.is_auto_reload:
-                self.is_auto_reload = False
-                if self.task:
-                    self.task.cancel()
-                reply = "✅ 已关闭自动重载"
-            ctx.add_return("reply", [reply])
+    async def handle_interval_command(self, ctx: EventContext, command: str):
+        """处理间隔设置命令"""
+        parts = command.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            ctx.add_return("reply", ["❌ 格式错误，使用 /reload_interval <秒数>"])
             ctx.prevent_default()
+            return
 
-    def __del__(self):
+        new_interval = int(parts[1])
+        if new_interval < self.min_interval:
+            ctx.add_return("reply", [f"❌ 间隔不能小于{self.min_interval}秒"])
+            ctx.prevent_default()
+            return
+
+        self.default_interval = new_interval
+        # 重启定时任务
         if self.task:
             self.task.cancel()
+        self.task = asyncio.create_task(self.schedule_reload())
+        
+        ctx.add_return("reply", [f"✅ 重载间隔已设置为{new_interval}秒"])
+        ctx.prevent_default()
