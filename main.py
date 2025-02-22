@@ -1,49 +1,136 @@
+import asyncio
 from pkg.plugin.context import register, handler, llm_func, BasePlugin, APIHost, EventContext
-from pkg.plugin.events import *  # 导入事件类
-
+from pkg.plugin.events import *
+from pkg.core.bootutils import lifecycle
+from typing import Union
 
 # 注册插件
-@register(name="Hello", description="hello world", version="0.1", author="RockChinQ")
-class MyPlugin(BasePlugin):
+@register(name="AutoReloader", description="定时热重载消息平台", version="1.0", author="Donzin")
+class AutoReloaderPlugin(BasePlugin):
 
-    # 插件加载时触发
     def __init__(self, host: APIHost):
-        pass
+        # 默认配置
+        self.reload_interval = 1200  # 默认20分钟（1200秒）
+        self.reload_scopes = [
+            lifecycle.LifecycleControlScope.PLATFORM.value,  # 默认只重载平台
+            # lifecycle.LifecycleControlScope.PLUGIN.value,
+        ]
+        self.is_auto_reload = True  # 默认开启自动重载
+        self.task = None
+        self.admin_users = ["admin_user_id"]  # 允许操作的管理员用户ID列表
 
-    # 异步初始化
     async def initialize(self):
-        pass
+        """初始化时启动定时任务"""
+        if self.is_auto_reload:
+            self.task = asyncio.create_task(self.schedule_reload())
 
-    # 当收到个人消息时触发
+    async def unload(self):
+        """插件卸载时停止任务"""
+        if self.task:
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+
+    async def schedule_reload(self):
+        """定时重载任务"""
+        while True:
+            try:
+                await asyncio.sleep(self.reload_interval)
+                await self.do_reload()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.ap.logger.error(f"定时重载失败: {str(e)}")
+
+    async def do_reload(self, scope: Union[str, list] = None):
+        """执行重载操作"""
+        try:
+            scopes = scope or self.reload_scopes
+            for s in scopes:
+                self.ap.logger.info(f"开始热重载: scope={s}")
+                await lifecycle.reload(s)
+                self.ap.logger.info(f"热重载完成: scope={s}")
+            return True
+        except Exception as e:
+            self.ap.logger.error(f"热重载失败: {str(e)}")
+            return False
+
     @handler(PersonNormalMessageReceived)
-    async def person_normal_message_received(self, ctx: EventContext):
-        msg = ctx.event.text_message  # 这里的 event 即为 PersonNormalMessageReceived 的对象
-        if msg == "hello":  # 如果消息为hello
+    async def handle_person_message(self, ctx: EventContext):
+        await self.process_command(ctx, is_group=False)
 
-            # 输出调试信息
-            self.ap.logger.debug("hello, {}".format(ctx.event.sender_id))
-
-            # 回复消息 "hello, <发送者id>!"
-            ctx.add_return("reply", ["hello, {}!".format(ctx.event.sender_id)])
-
-            # 阻止该事件默认行为（向接口获取回复）
-            ctx.prevent_default()
-
-    # 当收到群消息时触发
     @handler(GroupNormalMessageReceived)
-    async def group_normal_message_received(self, ctx: EventContext):
-        msg = ctx.event.text_message  # 这里的 event 即为 GroupNormalMessageReceived 的对象
-        if msg == "hello":  # 如果消息为hello
+    async def handle_group_message(self, ctx: EventContext):
+        await self.process_command(ctx, is_group=True)
 
-            # 输出调试信息
-            self.ap.logger.debug("hello, {}".format(ctx.event.sender_id))
+    async def process_command(self, ctx: EventContext, is_group: bool):
+        """处理控制命令"""
+        msg = ctx.event.text_message.strip()
+        sender = ctx.event.sender_id
 
-            # 回复消息 "hello, everyone!"
-            ctx.add_return("reply", ["hello, everyone!"])
+        # 权限检查
+        if sender not in self.admin_users:
+            return
 
-            # 阻止该事件默认行为（向接口获取回复）
+        # 解析命令
+        if msg.startswith("/reload"):
+            parts = msg.split()
+            if len(parts) == 1:
+                # 立即执行重载
+                success = await self.do_reload()
+                reply = "✅ 热重载完成" if success else "❌ 热重载失败"
+            elif len(parts) >= 2:
+                # 带参数的重载
+                scope_map = {
+                    "platform": [lifecycle.LifecycleControlScope.PLATFORM.value],
+                    "plugin": [lifecycle.LifecycleControlScope.PLUGIN.value],
+                    "all": [
+                        lifecycle.LifecycleControlScope.PLATFORM.value,
+                        lifecycle.LifecycleControlScope.PLUGIN.value
+                    ]
+                }
+                scope = scope_map.get(parts[1].lower())
+                if scope:
+                    success = await self.do_reload(scope)
+                    reply = f"✅ {parts[1]}重载完成" if success else f"❌ {parts[1]}重载失败"
+                else:
+                    reply = "❌ 无效的重载范围，可用值：platform/plugin/all"
+            ctx.add_return("reply", [reply])
             ctx.prevent_default()
 
-    # 插件卸载时触发
+        elif msg.startswith("/reload_interval"):
+            parts = msg.split()
+            if len(parts) == 2 and parts[1].isdigit():
+                new_interval = int(parts[1])
+                if new_interval >= 60:  # 最小60秒
+                    self.reload_interval = new_interval
+                    reply = f"✅ 重载间隔已设置为 {new_interval} 秒"
+                else:
+                    reply = "❌ 间隔时间不能小于60秒"
+            else:
+                reply = "❌ 用法：/reload_interval <秒数>"
+            ctx.add_return("reply", [reply])
+            ctx.prevent_default()
+
+        elif msg == "/auto_reload on":
+            if not self.is_auto_reload:
+                self.is_auto_reload = True
+                self.task = asyncio.create_task(self.schedule_reload())
+                reply = "✅ 已开启自动重载"
+            ctx.add_return("reply", [reply])
+            ctx.prevent_default()
+
+        elif msg == "/auto_reload off":
+            if self.is_auto_reload:
+                self.is_auto_reload = False
+                if self.task:
+                    self.task.cancel()
+                reply = "✅ 已关闭自动重载"
+            ctx.add_return("reply", [reply])
+            ctx.prevent_default()
+
     def __del__(self):
-        pass
+        if self.task:
+            self.task.cancel()
