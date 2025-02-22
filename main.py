@@ -6,7 +6,7 @@ from pkg.core import core_entities
 @register(name="AutoReload", 
          description="定时执行热重载保持连接", 
          version="1.0", 
-         author="YourName")
+         author="Donzin")
 class AutoReloadPlugin(BasePlugin):
     
     def __init__(self, host: APIHost):
